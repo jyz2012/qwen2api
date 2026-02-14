@@ -4,4 +4,5 @@ __pycache__/
 
 .venv/
 
-logs/
+# I use that to debug
+testapi.py 

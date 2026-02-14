@@ -1,8 +1,0 @@
-Dockerfile
-docker-compose.yml
-.dockerignore
-# 忽略所有 Python 字节码文件
-__pycache__
-*.pyc
-*.pyo
-*.pyd
