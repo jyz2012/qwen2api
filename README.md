@@ -31,4 +31,8 @@ uvicorn app:app --reload --host 0.0.0.0 --port 8000
 
 我不管了！Cherry Studio里面都能用！模型有 `vision-model`和 `coder-model` .
 
-PS: 之前发现不用了就一直懒得管，现在又有需求了发现改两下（就是重写了）还能使，感谢阿里。
+### APIkey获取
+进QwenChat聊天界面随便发个消息f12找到completions请求，cookie里面的token部分就是（一定要带上结尾的分号！！）
+
+
+~~PS: 之前发现不用了就一直懒得管，现在又有需求了发现改两下（就是重写了）还能使，感谢阿里。~~
