@@ -6,3 +6,4 @@ __pycache__/
 
 # I use that to debug
 testapi.py 
+test/

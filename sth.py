@@ -3,7 +3,63 @@ import hashlib
 import base64
 import secrets
 import time
+import httpx
+import jwt
+from typing import Tuple
 from openai import OpenAI
+from fastapi import HTTPException
+
+def _sha256(text: str) -> str:
+    return hashlib.sha256(text.encode()).hexdigest()
+
+async def login_with_password(email: str, password: str) -> Tuple[str, int]:
+    try:
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(60.0),
+            limits=httpx.Limits(max_keepalive_connections=100, max_connections=100),
+            verify=False
+        ) as client:
+            response = await client.post(
+                "https://chat.qwen.ai/api/v1/auths/signin",
+                json={"email": email, "password": _sha256(password)},
+                headers={
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36 Edg/141.0.0.0',
+                    'Content-Type': 'application/json',
+                    'Accept': '*/*',
+                    'Connection': 'keep-alive',
+                }
+            )
+        if response.status_code == 200:
+            data = response.json()
+            if "token" in data:
+                token = data["token"]
+                try:
+                    decoded = jwt.decode(token, options={"verify_signature": False})
+                    expires_at = decoded.get("exp", int(time.time()) + 86400)
+                except:
+                    expires_at = int(time.time()) + 86400
+                return token, expires_at
+        raise HTTPException(status_code=401, detail=f"Login failed: {response.text}")
+    except httpx.TimeoutException:
+        raise HTTPException(status_code=504, detail="Login timeout")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Login error: {str(e)}")
+
+# 这其实没必要的
+def parse_api_key(api_key: str) -> tuple[str, str]:
+    if not api_key:
+        raise HTTPException(status_code=401, detail="Missing API key")
+
+    key = api_key.replace("Bearer ", "").replace("bearer ", "")
+
+    if ":" in key:
+        return key.split(":", 1)
+
+    raise HTTPException(
+        status_code=401, detail="Invalid API key format. Expected: email:password"
+    )
 
 # Call API
 def call_qwen_api(access_token, model, messages, stream=True):
