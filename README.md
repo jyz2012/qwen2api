@@ -24,10 +24,8 @@ uv sync
 3. 运行服务
 
 ```bash
-uvicorn app:app --reload --host 0.0.0.0 --port 8000
+uv run app.py
 ```
-
-## API端点
 
 我不管了！Cherry Studio里面都能用！模型有 `vision-model`和 `coder-model` .
 
