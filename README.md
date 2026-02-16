@@ -36,6 +36,6 @@ Cherry Studio里面都能用，baseurl是 ` /v1/chat/comletions`.模型有  `vis
 
 ### APIkey获取
 
-登录使用的邮箱密码即为APIKey 格式为：`email:password`
+登录使用的邮箱密码即为APIKey，格式为：`email:password`
 
-~~PS: 之前发现不用了就一直懒得管，现在又有需求了发现改两下（就是重写了）还能使，感谢阿里。~~
+~~PS: 之前发现不能用了因为不用就一直懒得管，现在又有需求了发现改两下（就是重写了）还能使，感谢阿里。~~
