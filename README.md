@@ -4,7 +4,7 @@
 
 ### Todo:
 
-* [ ] 支持 `/v1/models`
+* [x] 支持 `/v1/models`
 * [ ] 研究下网页端还行不行（？）
 
 ## 快速搭建
@@ -24,7 +24,7 @@ $ uv sync
 $ pip install -r requirements.txt
 ```
 
-4. 运行服务
+3. 运行服务
 
 ```bash
 $ python app.py

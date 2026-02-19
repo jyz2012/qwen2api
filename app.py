@@ -36,14 +36,40 @@ async def cache_token(email: str, token: str, expires_at: int):
 app = FastAPI()
 
 
-@app.get("/")
-def index():
-    return {"Hello": "World"}
+# @app.get("/")
+# def index():
+#     return {"Hello": "World"}
 
 
 @app.get("/v1/models")
 def get_models():
-    return {"Hello": "World"}
+    modellist={
+        'data': [
+            {
+                'id': 'coder-model',
+                'name': 'Coder Model',
+                'object': 'model',
+                'owned_by': 'qwen'
+            },
+            {
+                'id': 'vision-model',
+                'name': 'Vision Model',
+                'object': 'model',
+                'owned_by': 'qwen',
+                'info': {
+                    'id': 'vision-model',
+                    'base_model_id': None,
+                    'name': 'Vision Model',
+                    'meta': {
+                        'capabilities': {
+                            'vision': True
+                        }
+                    }
+                }
+            }
+        ]
+    }
+    return modellist
 
 
 @app.post("/v1/chat/completions")
