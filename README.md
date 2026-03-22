@@ -36,7 +36,7 @@ $ python chat.py
 
 ### API调用
 
-Cherry Studio里面都能用，baseurl是 ` /v1/chat/comletions`.模型有  `vision-model `和 `coder-model` .
+Cherry Studio里面都能用，baseurl是 ` /v1/chat/comletions`.模型有  `vision-model `和 `coder-model` 还有网页聊天里的模型.
 
 ### APIkey获取
 
