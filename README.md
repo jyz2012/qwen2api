@@ -1,11 +1,11 @@
 # Qwen2Api
 
-本质上是利用Qwen Code的免费额度，本身也可以使用Openai格式调用，但access_token有效期太短了也相对难获取，所以我做了这个，支持使用账号密码调用。
+本质上是利用Qwen Code的免费额度，本身也可以使用Openai格式调用，但access_token有效期太短了也相对难获取，所以我做了这个，支持使用账号密码调用，现在网页聊天的逆向也回来了，两个都可以用。
 
 ### Todo:
 
-* [x] 支持 `/v1/models`
-* [ ] 研究下网页端还行不行（？）
+* [X] 支持 `/v1/models`
+* [X] 研究下网页端还行不行（？）
 
 ## 快速搭建
 
@@ -28,6 +28,10 @@ $ pip install -r requirements.txt
 
 ```bash
 $ python app.py
+# 单独运行QwenCode服务
+$ python code.py
+# 单独运行QwenChat逆向服务
+$ python chat.py
 ```
 
 ### API调用

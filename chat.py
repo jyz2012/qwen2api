@@ -6,30 +6,18 @@ import asyncio
 import re
 import mimetypes
 import base64
-import logging
 from typing import List, Dict, Optional, AsyncGenerator
 from dataclasses import dataclass, field
-
+ 
 import httpx
 from fastapi import FastAPI, Request, HTTPException, Header
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("uvicorn.error")
+from sth import login_with_password, parse_api_key
 
-from sth import (
-    get_file_extension,
-    _sha256, 
-    login_with_password, 
-    parse_api_key, 
-    generate_pkce_pair, 
-    request_device_code, 
-    authorize, 
-    poll_for_token, 
-    call_qwen_api
-)
-
+import logging
+ 
 # ==================== 配置 ====================
 BASE_URL = "https://chat.qwen.ai"
 DEFAULT_HEADERS = {
@@ -39,33 +27,40 @@ DEFAULT_HEADERS = {
     "Connection": "keep-alive",
 }
 
-LEGACY_MODELS = ["coder-model", "vision-model"]
-
 def create_client(timeout: float = 30.0) -> httpx.AsyncClient:
     """创建带有重试机制的HTTP客户端"""
     transport = httpx.AsyncHTTPTransport(retries=3, verify=False)
     return httpx.AsyncClient(timeout=timeout, transport=transport)
 
-# ==================== Cache ====================
+# ==================== 日志工具 ====================
+# 使用 FastAPI/Uvicorn 的日志工具
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("uvicorn.error")
+ 
+# ==================== 缓存管理 ====================
 @dataclass
 class CachedImage:
     url: str
     timestamp: int = field(default_factory=lambda: int(time.time()))
-
+ 
 image_cache: Dict[str, CachedImage] = {}
-
+ 
+ 
 @dataclass
 class CachedToken:
     token: str
     expires_at: int
     email: str
-
+ 
 token_cache: Dict[str, CachedToken] = {}
 cache_lock = asyncio.Lock()
-
+ 
+ 
+# ==================== Token管理 ====================
 def get_cache_key(email: str) -> str:
     return hashlib.md5(email.encode()).hexdigest()
-
+ 
+ 
 async def get_cached_token(email: str) -> Optional[str]:
     key = get_cache_key(email)
     async with cache_lock:
@@ -76,14 +71,38 @@ async def get_cached_token(email: str) -> Optional[str]:
             else:
                 del token_cache[key]
     return None
-
+ 
+ 
 async def cache_token(email: str, token: str, expires_at: int):
     key = get_cache_key(email)
     async with cache_lock:
         token_cache[key] = CachedToken(token=token, expires_at=expires_at, email=email)
-
-
-# ==================== Upload Images to AliyunOSS ====================
+ 
+ 
+# ==================== 工具函数 ====================
+def sha256_encrypt(data: str) -> str:
+    """SHA256加密"""
+    return hashlib.sha256(data.encode()).hexdigest()
+ 
+ 
+def get_file_extension(mime_type: str) -> str:
+    """从MIME类型获取文件扩展名"""
+    extensions = {
+        'image/jpeg': 'jpg',
+        'image/png': 'png',
+        'image/gif': 'gif',
+        'image/webp': 'webp',
+        'image/bmp': 'bmp',
+    }
+    return extensions.get(mime_type, 'png')
+ 
+ 
+def generate_uuid() -> str:
+    """生成UUID"""
+    return str(uuid.uuid4())
+ 
+ 
+# ==================== 图片上传到阿里云OSS ====================
 async def request_sts_token(filename: str, filesize: int, filetype: str, token: str) -> Dict:
     """请求STS Token"""
     headers = DEFAULT_HEADERS.copy()
@@ -126,7 +145,8 @@ async def request_sts_token(filename: str, filesize: int, filetype: str, token: 
                 "id": data["file_id"]
             }
         }
-
+ 
+ 
 async def upload_to_oss(file_buffer: bytes, sts_credentials: Dict, oss_info: Dict, content_type: str) -> str:
     """上传文件到阿里云OSS"""
     try:
@@ -162,7 +182,8 @@ async def upload_to_oss(file_buffer: bytes, sts_credentials: Dict, oss_info: Dic
     logger.info("[UPLOAD] 文件上传到OSS成功")
     
     return oss_info["url"]
-
+ 
+ 
 async def upload_file_to_qwen_oss(file_buffer: bytes, filename: str, token: str) -> Dict:
     """完整的文件上传流程"""
     # 1. 获取文件信息
@@ -187,7 +208,8 @@ async def upload_file_to_qwen_oss(file_buffer: bytes, filename: str, token: str)
         "file_id": sts_data["file_info"]["id"],
         "message": "上传成功"
     }
-
+ 
+ 
 async def process_image_upload(image_url: str, token: str) -> Optional[str]:
     """处理图片上传，返回上传后的URL"""
     # 检查是否为base64图片
@@ -205,7 +227,7 @@ async def process_image_upload(image_url: str, token: str) -> Optional[str]:
     # 生成文件名和签名
     file_extension = get_file_extension(mime_type)
     filename = f"{uuid.uuid4()}.{file_extension}"
-    signature = _sha256(base64_data)
+    signature = sha256_encrypt(base64_data)
     
     # 检查缓存
     if signature in image_cache:
@@ -231,7 +253,8 @@ async def process_image_upload(image_url: str, token: str) -> Optional[str]:
         raise HTTPException(status_code=500, detail=f"图片上传失败: {str(e)}")
     
     return None
-
+ 
+ 
 # ==================== 消息解析 ====================
 def extract_text_from_content(content) -> str:
     """从消息内容中提取文本"""
@@ -244,13 +267,15 @@ def extract_text_from_content(content) -> str:
                 text_parts.append(item.get("text", ""))
         return "".join(text_parts)
     return ""
-
+ 
+ 
 def format_single_message(message: Dict) -> str:
     """格式化单条消息为文本（带角色标注）"""
     role = message.get("role", "")
     content = extract_text_from_content(message.get("content", ""))
     return f"{role}:{content}" if content.strip() else ""
-
+ 
+ 
 def format_history_messages(messages: List[Dict]) -> str:
     """格式化历史消息"""
     formatted_parts = []
@@ -259,7 +284,8 @@ def format_history_messages(messages: List[Dict]) -> str:
         if formatted:
             formatted_parts.append(formatted)
     return ";".join(formatted_parts)
-
+ 
+ 
 async def process_single_message(messages: List[Dict], thinking_config: Dict, chat_type: str, token: str) -> List[Dict]:
     """处理单条消息"""
     for message in messages:
@@ -298,7 +324,8 @@ async def process_single_message(messages: List[Dict], thinking_config: Dict, ch
             message["content"] = new_content
     
     return messages
-
+ 
+ 
 async def parse_messages(messages: List[Dict], thinking_config: Dict, chat_type: str, token: str) -> List[Dict]:
     """解析消息，处理图片上传和历史消息"""
     
@@ -369,7 +396,8 @@ async def parse_messages(messages: List[Dict], thinking_config: Dict, chat_type:
             "extra": {},
             "feature_config": thinking_config
         }]
-
+ 
+ 
 # ==================== 辅助函数 ====================
 def get_chat_type(model: str) -> str:
     """根据模型名称确定聊天类型"""
@@ -382,7 +410,8 @@ def get_chat_type(model: str) -> str:
     elif "-deep-research" in model_lower:
         return "deep_research"
     return "t2t"
-
+ 
+ 
 def parse_model(model: str) -> str:
     """解析模型名称，移除特殊后缀"""
     if not model:
@@ -392,7 +421,8 @@ def parse_model(model: str) -> str:
         model = model.replace(suffix, "")
     
     return model
-
+ 
+ 
 def is_thinking_enabled(model: str, enable_thinking: bool, thinking_budget: int) -> Dict:
     """判断是否启用思考模式"""
     config = {
@@ -411,7 +441,8 @@ def is_thinking_enabled(model: str, enable_thinking: bool, thinking_budget: int)
         config["thinking_budget"] = thinking_budget
     
     return config
-
+ 
+ 
 async def generate_chat_id(token: str, model: str) -> Optional[str]:
     """生成chat_id"""
     headers = DEFAULT_HEADERS.copy()
@@ -437,7 +468,8 @@ async def generate_chat_id(token: str, model: str) -> Optional[str]:
             return data.get("data", {}).get("id")
     
     return None
-
+ 
+ 
 # ==================== 思考模式处理器 ====================
 class ThinkingHandler:
     """思考模式处理器"""
@@ -514,19 +546,79 @@ class ThinkingHandler:
         if not enable_thinking and self.web_search_info:
             return await self.generate_markdown_table(self.web_search_info, "text")
         return None
+ 
+ 
+# ==================== 图片/视频生成 ====================
+async def handle_t2i_response(response, model: str) -> Dict:
+    """处理图片生成流式响应"""
+    content_url = None
+    
+    # 使用 aiter_lines() 自动处理编码
+    async for line in response.aiter_lines():
+        line = line.strip()
+        if line.startswith("data:"):
+            try:
+                json_str = line[5:].strip()
+                if json_str == "[DONE]":
+                    break
+                
+                json_obj = json.loads(json_str)
+                if json_obj.get("choices") and len(json_obj["choices"]) > 0:
+                    delta = json_obj["choices"][0].get("delta", {})
+                    url = delta.get("content", "").strip()
+                    if url and not content_url:
+                        content_url = url
+                        logger.info(f"[CHAT] 生成图片URL: {content_url}")
+                        break
+            except json.JSONDecodeError:
+                pass
+    
+    if content_url:
+        return {
+            "id": f"chatcmpl-{generate_uuid()}",
+            "object": "chat.completion",
+            "created": int(time.time()),
+            "model": model,
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "content": f"![image]({content_url})"
+                    },
+                    "finish_reason": "stop"
+                }
+            ]
+        }
+    
+    raise HTTPException(status_code=500, detail="Failed to generate image")
+ 
 
-# ==================== 核心聊天函数 ====================
-
-async def chat_web_api(
-    token: str,
+# ==================== 聊天核心函数 ====================
+async def chat(
+    email: str,
+    password: str,
     model: str,
     messages: List[Dict],
     stream: bool,
     enable_thinking: bool = False,
     thinking_budget: int = 81920,
 ) -> tuple[Optional[Dict], Optional[AsyncGenerator]]:
-    """使用 Web API 方式进行对话 (来自 chat2_last.py)"""
+    """
+    聊天补全接口 - 完整版，支持搜索和思考模式
+    
+    Returns:
+        (response_dict, async_generator) or (response_dict, None)
+    """
+    # 获取或登录令牌
+    token = await get_cached_token(email)
+    if not token:
+        token, expires_at = await login_with_password(email, password)
+        await cache_token(email, token, expires_at)
+    
+    # 创建新的客户端
     client = create_client(timeout=60.0)
+    
     try:
         headers = DEFAULT_HEADERS.copy()
         headers["Authorization"] = f"Bearer {token}"
@@ -546,8 +638,7 @@ async def chat_web_api(
         
         # 解析消息（处理图片上传）
         parsed_messages = await parse_messages(messages, thinking_config, chat_type, token)
-        
-        # 处理 /no_think 标识
+        # 去掉最后一条消息的末尾 /no_think 并替换 body 中的 parsed_messages
         if parsed_messages and isinstance(parsed_messages, list):
             last_msg = parsed_messages[-1]
             if isinstance(last_msg, dict) and "content" in last_msg:
@@ -555,6 +646,7 @@ async def chat_web_api(
                 if isinstance(content, str) and content.endswith("/no_think"):
                     last_msg["content"] = content[:-len("/no_think")].rstrip()
                 elif isinstance(content, list):
+                    # 如果是列表格式，检查最后一个 text 项
                     for item in reversed(content):
                         if item.get("type") == "text":
                             text = item.get("text", "")
@@ -569,49 +661,66 @@ async def chat_web_api(
             "chat_type": chat_type,
             "model": parse_model(model),
             "messages": parsed_messages,
-            "session_id": str(uuid.uuid4()),
-            "id": str(uuid.uuid4()),
+            "session_id": generate_uuid(),
+            "id": generate_uuid(),
             "sub_chat_type": chat_type,
             "chat_mode": "normal",
             "chat_id": chat_id,
         }
-        
+        print(body)
         url = f"{BASE_URL}/api/v2/chat/completions?chat_id={chat_id}"
         
         if stream:
+            # 流式响应
             thinking_handler = ThinkingHandler()
-            message_id = str(uuid.uuid4())
+            message_id = generate_uuid()
             
             async def stream_generator() -> AsyncGenerator:
                 try:
                     async with client.stream("POST", url, json=body, headers=headers) as resp:
                         resp.raise_for_status()
+                        
                         async for line in resp.aiter_lines():
                             if line.startswith("data: "):
                                 data = line[6:]
                                 if data == "[DONE]":
+                                    # 发送结束前的最终内容
                                     final_content = await thinking_handler.finalize_response(enable_thinking, enable_web_search)
                                     if final_content:
                                         yield f"data: {json.dumps({'choices': [{'delta': {'content': final_content}}]})}\n\n"
+                                    
                                     yield f"data: {json.dumps({'choices': [{'delta': {}, 'finish_reason': 'stop'}]})}\n\n"
                                     break
                                 
                                 try:
                                     chunk = json.loads(data)
+                                    
+                                    # 处理思考模式和搜索
                                     if chunk.get("choices") and len(chunk["choices"]) > 0:
                                         delta = chunk["choices"][0].get("delta", {})
+                                        
+                                        # 提取内容和思考信息
                                         content = await thinking_handler.process_delta(delta, enable_thinking, enable_web_search)
+                                        
                                         if content:
                                             result = {
                                                 "id": chunk.get("id", f"chatcmpl-{message_id}"),
                                                 "object": "chat.completion.chunk",
                                                 "created": int(time.time()),
                                                 "model": model,
-                                                "choices": [{"index": 0, "delta": {"content": content}, "finish_reason": None}],
+                                                "choices": [
+                                                    {
+                                                        "index": 0,
+                                                        "delta": {"content": content},
+                                                        "finish_reason": None,
+                                                    }
+                                                ],
                                             }
                                             yield f"data: {json.dumps(result, ensure_ascii=False)}\n\n"
+                                
                                 except json.JSONDecodeError:
                                     pass
+                
                 except Exception as e:
                     logger.error(f"[CHAT] 流式响应错误: {str(e)}")
                     yield f"data: {json.dumps({'error': str(e)}, ensure_ascii=False)}\n\n"
@@ -619,13 +728,19 @@ async def chat_web_api(
                     await client.aclose()
             
             return None, stream_generator()
+        
         else:
+            # 非流式响应
             resp = await client.post(url, json=body, headers=headers)
+            
             if resp.status_code != 200:
                 await client.aclose()
+                logger.error(f"[CHAT] 请求失败: {resp.text}")
                 raise HTTPException(status_code=500, detail=f"Request failed: {resp.text}")
             
             data = resp.json()
+            
+            # 提取内容
             content_text = ""
             if "choices" in data and len(data["choices"]) > 0:
                 choice = data["choices"][0]
@@ -641,54 +756,37 @@ async def chat_web_api(
                 )
             
             await client.aclose()
+            
             return {
-                "id": f"chatcmpl-{str(uuid.uuid4())}",
+                "id": f"chatcmpl-{generate_uuid()}",
                 "object": "chat.completion",
                 "created": int(time.time()),
                 "model": model,
-                "choices": [{"index": 0, "message": {"role": "assistant", "content": str(content_text)}, "finish_reason": "stop"}],
-                "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {"role": "assistant", "content": str(content_text)},
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": 0,
+                    "completion_tokens": 0,
+                    "total_tokens": 0,
+                },
             }, None
+    
+    except HTTPException:
+        await client.aclose()
+        raise
     except Exception as e:
         await client.aclose()
-        raise e
-
-async def chat_device_flow(
-    token: str,
-    model: str,
-    messages: List[Dict],
-    stream: bool
-) -> tuple[Optional[Dict], Optional[AsyncGenerator]]:
-    """使用 Device Flow 方式进行对话 (来自 app.py)"""
-    # 授权流程
-    code_verifier, code_challenge = generate_pkce_pair()
-    device_code_info = request_device_code(code_challenge)
-    authorize(device_code_info["user_code"], token)
-    
-    # 获取 Access Token
-    token_response = poll_for_token(device_code_info["device_code"], code_verifier)
-    access_token = token_response["access_token"]
-    
-    # 调用 OpenAI 风格的 API
-    result = call_qwen_api(access_token, model, messages, stream)
-    
-    if stream:
-        async def iter_chunks():
-            try:
-                for chunk in result:
-                    yield f"data: {chunk.to_json(indent=None)}\n\n"
-                yield "data: [DONE]\n\n"
-            finally:
-                try:
-                    result.close()
-                except Exception:
-                    pass
-        return None, iter_chunks()
-    else:
-        return result.to_dict(mode="json"), None
-
+        logger.error(f"[CHAT] 聊天处理错误: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+ 
+ 
 # ==================== FastAPI 应用 ====================
-app = FastAPI(title="Qwen2API Combined", version="2.1.0")
+app = FastAPI(title="Qwen2API", version="2.0.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -696,95 +794,80 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
+ 
+ 
 @app.get("/")
 async def root():
     return {
-        "name": "Qwen2API Combined",
-        "version": "2.1.0",
+        "name": "Qwen2API",
+        "version": "2.0.0",
         "endpoints": {
             "chat": "/v1/chat/completions",
             "models": "/v1/models",
+            "images": "/v1/images/generations",
+            "videos": "/v1/videos/generations",
         },
-        "info": "Merged app.py and chat2_last.py. Uses model name to distinguish logic."
+        "usage": "API Key format: email:password",
     }
-
+ 
+ 
 @app.get("/v1/models")
 async def list_models(authorization: str = Header(None)):
-    """获取模型列表，合并了两个文件的逻辑"""
-    legacy_data = [
-        {'id': 'coder-model', 'name': 'Coder Model', 'object': 'model', 'owned_by': 'qwen'},
-        {
-            'id': 'vision-model', 'name': 'Vision Model', 'object': 'model', 'owned_by': 'qwen',
-            'info': {'id': 'vision-model', 'base_model_id': None, 'name': 'Vision Model', 'meta': {'capabilities': {'vision': True}}}
-        }
-    ]
-    
+    """获取模型列表"""
     try:
-        if not authorization:
-            return {"data": legacy_data}
-            
         email, password = parse_api_key(authorization)
         token = await get_cached_token(email)
         if not token:
-            token, expires_at = await login_with_password(email, password)
-            await cache_token(email, token, expires_at)
-            
+            token, _ = await login_with_password(email, password)
+            await cache_token(email, token, int(time.time()) + 3600)
+    except Exception:
+        # 失败则尝试匿名请求
         headers = DEFAULT_HEADERS.copy()
-        headers["Cookie"] = f"token={token};"
-        
         async with create_client(timeout=30.0) as client:
             resp = await client.get("https://chat.qwen.ai/api/models", headers=headers)
-            if resp.status_code == 200:
-                web_models = resp.json()
-                # 合并列表
-                if isinstance(web_models, dict) and "data" in web_models:
-                    web_models["data"].extend(legacy_data)
-                    return web_models
-                elif isinstance(web_models, list):
-                    return {"data": web_models + legacy_data}
-                    
-    except Exception:
-        pass
-        
-    return {"data": legacy_data}
-
+            if resp.status_code != 200:
+                raise HTTPException(status_code=resp.status_code, detail=resp.text)
+            return resp.json()
+    
+    headers = DEFAULT_HEADERS.copy()
+    headers["Cookie"] = f"token={token};"
+    
+    async with create_client(timeout=30.0) as client:
+        resp = await client.get("https://chat.qwen.ai/api/models", headers=headers)
+        if resp.status_code != 200:
+            raise HTTPException(status_code=resp.status_code, detail=resp.text)
+        return resp.json()
+ 
+ 
 @app.post("/v1/chat/completions")
-async def chat_completions(request: Request):
-    """聊天补全 API - 根据模型名称自动切换处理逻辑"""
+async def chat_completions(req: Request, authorization: str = Header(None)):
+    """聊天补全API - 支持文本、图片、思考、搜索等所有功能"""
     try:
-        # 1. 鉴权和解析请求
-        body = await request.json()
+        if not authorization:
+            raise HTTPException(status_code=401, detail="Missing Authorization header")
+        
+        # 解析 API Key
+        email, password = parse_api_key(authorization)
+        
+        # 解析请求体
+        body = await req.json()
         model = body.get("model", "qwen3-coder-plus")
         messages = body.get("messages", [])
         stream = body.get("stream", False)
-
-        auth = request.headers.get("Authorization", "")
-        email, password = parse_api_key(auth)
-
-        # 2. 获取/缓存 Token
-        token = await get_cached_token(email)
-        if not token:
-            token, expires_at = await login_with_password(email, password)
-            await cache_token(email, token, expires_at)
-            
-        # 3. 根据模型名称决定路径
-        logger.info(f"Using model: {model}")
-        if model in LEGACY_MODELS:
-            resp_dict, gen = await chat_device_flow(token, model, messages, stream)
-        else:
-            enable_thinking = body.get("enable_thinking", False)
-            thinking_budget = body.get("thinking_budget", 81920)
-            resp_dict, gen = await chat_web_api(token, model, messages, stream, enable_thinking, thinking_budget)
-            
-        # 4. 返回响应
+        enable_thinking = body.get("enable_thinking", False)
+        thinking_budget = body.get("thinking_budget", 81920)
+        
+        # 调用聊天函数
+        resp_dict, gen = await chat(
+            email, password, model, messages, stream, enable_thinking, thinking_budget
+        )
+        
         if stream:
             async def generator():
                 try:
                     async for chunk in gen:
                         yield chunk
                 except Exception as e:
-                    logger.error(f"[STREAM] Stream error: {str(e)}")
                     yield f"data: {json.dumps({'error': str(e)}, ensure_ascii=False)}\n\n"
             
             return StreamingResponse(
@@ -793,15 +876,17 @@ async def chat_completions(request: Request):
                 headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
             )
         else:
-            return JSONResponse(content=resp_dict)
-            
+            return resp_dict
+    
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"API Error: {str(e)}")
+        logger.error(f"[API] API错误: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
-
+ 
+ 
 if __name__ == "__main__":
     import uvicorn
-    logger.info("[SERVER] Qwen2API Server Starting...")
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    
+    logger.info("[SERVER] Qwen2API 启动中...")
+    uvicorn.run(app, host="0.0.0.0", port=3000)

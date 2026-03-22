@@ -9,6 +9,16 @@ from typing import Tuple
 from openai import OpenAI
 from fastapi import HTTPException
 
+def get_file_extension(mime_type: str) -> str:
+    extensions = {
+        'image/jpeg': 'jpg',
+        'image/png': 'png',
+        'image/gif': 'gif',
+        'image/webp': 'webp',
+        'image/bmp': 'bmp',
+    }
+    return extensions.get(mime_type, 'png')
+
 def _sha256(text: str) -> str:
     return hashlib.sha256(text.encode()).hexdigest()
 
